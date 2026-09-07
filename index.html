@@ -147,6 +147,22 @@
   .progress-fill { height: 100%; background: var(--blue); transition: width 0.3s ease; }
 
   .options-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+
+  .slot-row { display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-end; margin: 4px 0 12px; }
+  .slot { display: inline-flex; flex-direction: column; align-items: flex-start; flex: 0 0 auto; }
+  .slot-mark { display: inline-flex; align-items: center; gap: 2px; height: 19px; margin-left: -3px; }
+  .slot-answer { font-size: 13px; font-weight: 700; color: var(--red); white-space: nowrap; }
+  .slot-input {
+    all: unset; display: inline-block; box-sizing: content-box;
+    height: 26px; line-height: 26px; border-bottom: 2px solid var(--rule-strong);
+    text-align: center; font-size: 16px; font-weight: 700;
+    font-family: var(--font-body); color: var(--ink); cursor: text;
+  }
+  .slot-input:focus { border-bottom-color: var(--blue); }
+  .input-hint { font-size: 12px; color: var(--muted); margin: 0; }
+  .verdict { font-size: 13.5px; font-weight: 700; margin: 0; padding: 9px 11px; border-radius: var(--radius, 8px); border-radius: 8px; }
+  .verdict-ok { background: var(--blue-tint); color: var(--blue); }
+  .verdict-ng { background: var(--red-tint); color: var(--red); }
   .option-btn {
     background: #fff; border: 1.5px solid var(--rule); border-radius: 10px; padding: 14px 8px;
     font-family: var(--font-body); font-size: 14px; font-weight: 500; cursor: pointer; min-height: 54px;
@@ -294,10 +310,11 @@ function loadState() {
       parsed.decks = parsed.decks || [];
       parsed.progress = parsed.progress || {};
       parsed.results = parsed.results || {};
+      parsed.answerMode = parsed.answerMode || 'choice';
       return parsed;
     }
   } catch (e) { /* fall through */ }
-  return { decks: [], activeDeckId: null, progress: {}, results: {}, lastDirection: 'en2ja' };
+  return { decks: [], activeDeckId: null, progress: {}, results: {}, lastDirection: 'en2ja', answerMode: 'choice' };
 }
 var state = loadState();
 var view = { screen: 'home', notice: '', noticeType: '', draftWords: null, draftPreview: '', exitConfirm: false, deleteConfirm: null, setupMode: null, resultsFilter: 'all', resultsSearch: '', resultsVisible: 100 };
@@ -585,6 +602,13 @@ function renderTestSetup() {
     '<div class="pill' + (state.lastDirection === 'en2ja' ? ' active' : '') + '" data-action="setup-direction" data-dir="en2ja">英語 → 日本語</div>' +
     '<div class="pill' + (state.lastDirection === 'ja2en' ? ' active' : '') + '" data-action="setup-direction" data-dir="ja2en">日本語 → 英語</div>' +
     '</div>';
+  if (state.lastDirection === 'ja2en') {
+    out += '<label class="field-label" style="margin-top:0">答え方</label>';
+    out += '<div class="pill-group">' +
+      '<div class="pill' + (state.answerMode === 'choice' ? ' active' : '') + '" data-action="setup-answermode" data-mode="choice">4択から選ぶ</div>' +
+      '<div class="pill' + (state.answerMode === 'input' ? ' active' : '') + '" data-action="setup-answermode" data-mode="input">キーボードで入力</div>' +
+      '</div>';
+  }
   out += '<div class="setup-row"><span class="field-label" style="margin:0">1回のテスト問題数</span>' +
     '<input class="num-input" id="batchSizeInput" type="number" min="5" max="50" value="' + batch + '"></div>';
   out += '</div>';
@@ -618,22 +642,88 @@ function renderTest() {
       : '<svg viewBox="0 0 100 100" class="stamp-svg"><line x1="20" y1="20" x2="80" y2="80" stroke="var(--red)" stroke-width="7" stroke-linecap="round"/><line x1="80" y1="20" x2="20" y2="80" stroke="var(--red)" stroke-width="7" stroke-linecap="round"/></svg>') +
       '</div>';
   }
-  out += '<p class="card-label">' + (q.direction === 'en2ja' ? 'この単語の意味は?' : 'この日本語にあたる英単語は?') + '</p>';
+  var label;
+  if (q.direction === 'en2ja') label = 'この単語の意味は?';
+  else label = q.answerWords.length > 1 ? '英熟語を答えよう' : '英単語を答えよう';
+  out += '<p class="card-label">' + label + '</p>';
   out += '<p class="card-word">' + escapeHtml(q.prompt) + '</p>';
-  out += '<button class="speak-btn" data-action="speak" data-text="' + escapeHtml(q.en) + '">&#128266; 発音を聞く</button>';
+  if (quiz.inputMode && quiz.selected === null) {
+    /* 出題中は答えの発音を伏せる */
+  } else {
+    out += '<button class="speak-btn" data-action="speak" data-text="' + escapeHtml(q.en) + '">&#128266; 発音を聞く</button>';
+  }
   out += '</div>';
 
-  out += '<div class="options-grid">';
-  q.options.forEach(function (opt, idx) {
-    var cls = 'option-btn';
-    if (quiz.selected !== null) {
-      if (opt === q.correct) cls += ' option-correct';
-      else if (opt === quiz.selected) cls += ' option-wrong';
-      else cls += ' option-dim';
+  if (quiz.inputMode) {
+    out += renderInputSlots(q);
+  } else {
+    out += '<div class="options-grid">';
+    q.options.forEach(function (opt, idx) {
+      var cls = 'option-btn';
+      if (quiz.selected !== null) {
+        if (opt === q.correct) cls += ' option-correct';
+        else if (opt === quiz.selected) cls += ' option-wrong';
+        else cls += ' option-dim';
+      }
+      out += '<button class="' + cls + '" data-action="answer" data-idx="' + idx + '"' + (quiz.selected !== null ? ' disabled' : '') + '>' + escapeHtml(opt) + '</button>';
+    });
+    out += '</div>';
+  }
+  out += '</div>';
+  return out;
+}
+
+function markSvg(isOk) {
+  if (isOk) {
+    return '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" style="flex:0 0 auto">' +
+      '<circle cx="12" cy="12" r="8" fill="none" stroke="var(--red)" stroke-width="2"/></svg>';
+  }
+  return '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" style="flex:0 0 auto">' +
+    '<path d="M6 6 L18 18 M18 6 L6 18" stroke="var(--red)" stroke-width="2" stroke-linecap="round"/></svg>';
+}
+
+function slotWidth(len) {
+  return Math.max(30, len * 12 + 8);
+}
+
+function renderInputSlots(q) {
+  var graded = quiz.selected !== null;
+  var out = '';
+
+  if (!graded) {
+    out += '<p class="input-hint">1語ずつ入力してEnter・最後の語のEnterで答え合わせ</p>';
+  }
+
+  out += '<div class="slot-row">';
+  q.answerWords.forEach(function (aw, i) {
+    var typed = quiz.typed[i] || '';
+    out += '<span class="slot">';
+    out += '<span class="slot-mark">';
+    if (graded) {
+      var isOk = typed.trim().toLowerCase() === aw.toLowerCase();
+      out += markSvg(isOk);
+      if (!isOk) out += '<span class="slot-answer">' + escapeHtml(aw) + '</span>';
     }
-    out += '<button class="' + cls + '" data-action="answer" data-idx="' + idx + '"' + (quiz.selected !== null ? ' disabled' : '') + '>' + escapeHtml(opt) + '</button>';
+    out += '</span>';
+    var w = slotWidth(Math.max(typed.length, 2));
+    out += '<input class="slot-input" type="text" id="slot' + i + '" data-slot="' + i + '"' +
+      ' style="width:' + w + 'px"' +
+      ' value="' + escapeHtml(typed) + '"' +
+      ' autocapitalize="off" autocorrect="off" spellcheck="false"' +
+      ' enterkeyhint="' + (i < q.answerWords.length - 1 ? 'next' : 'done') + '"' +
+      (graded ? ' readonly' : '') + '>';
+    out += '</span>';
   });
-  out += '</div></div>';
+  out += '</div>';
+
+  if (graded) {
+    var ok = quiz.feedback === 'correct';
+    out += '<p class="verdict ' + (ok ? 'verdict-ok' : 'verdict-ng') + '">' +
+      (ok ? '正解' : '不正解　正解は ' + escapeHtml(q.correct)) + '</p>';
+  } else {
+    out += '<button class="btn btn-primary" data-action="input-submit">答え合わせ</button>';
+    if (view.inputError) out += '<p class="notice notice-err">' + escapeHtml(view.inputError) + '</p>';
+  }
   return out;
 }
 
@@ -745,7 +835,8 @@ function buildQuestion(word, allWords, direction) {
   var pool = allWords.filter(function (w) { return w.id !== word.id; });
   var distractors = shuffle(pool).slice(0, 3).map(function (w) { return direction === 'en2ja' ? w.ja : w.en; });
   var options = shuffle([correct].concat(distractors));
-  return { wordId: word.id, en: word.en, ja: word.ja, prompt: promptText, correct: correct, options: options, direction: direction };
+  var answerWords = word.en.trim().split(/\s+/);
+  return { wordId: word.id, en: word.en, ja: word.ja, prompt: promptText, correct: correct, options: options, direction: direction, answerWords: answerWords };
 }
 
 function beginQuizSession() {
@@ -768,9 +859,12 @@ function beginQuizSession() {
   }
 
   var questions = wordsBatch.map(function (w) { return buildQuestion(w, deck.words, direction); });
-  quiz = { questions: questions, index: 0, answers: [], selected: null, feedback: null, mode: mode, roundNumber: roundNumber, startCursor: startCursor, deckId: deck.id };
+  var inputMode = (direction === 'ja2en' && state.answerMode === 'input');
+  quiz = { questions: questions, index: 0, answers: [], selected: null, feedback: null, mode: mode, roundNumber: roundNumber, startCursor: startCursor, deckId: deck.id, inputMode: inputMode, typed: [] };
   view.exitConfirm = false;
+  view.inputError = '';
   goto('test');
+  if (inputMode) focusSlot(0);
 }
 
 function commitAnswers(qs) {
@@ -807,6 +901,63 @@ function handleAnswerSelect(idx) {
       finishQuiz();
     }
   }, 950);
+}
+
+function focusSlot(i) {
+  setTimeout(function () {
+    var el = document.getElementById('slot' + i);
+    if (el) { el.focus(); var v = el.value; el.value = ''; el.value = v; }
+  }, 30);
+}
+
+function readSlots() {
+  var q = quiz.questions[quiz.index];
+  var vals = [];
+  for (var i = 0; i < q.answerWords.length; i++) {
+    var el = document.getElementById('slot' + i);
+    vals.push(el ? el.value : '');
+  }
+  return vals;
+}
+
+function submitInputAnswer() {
+  if (quiz.selected !== null) return;
+  var q = quiz.questions[quiz.index];
+  var vals = readSlots();
+  var allEmpty = vals.every(function (v) { return !v.trim(); });
+  if (allEmpty) {
+    view.inputError = '答えを入力してね';
+    quiz.typed = vals;
+    render();
+    focusSlot(0);
+    return;
+  }
+  view.inputError = '';
+  quiz.typed = vals;
+
+  var isCorrect = true;
+  for (var i = 0; i < q.answerWords.length; i++) {
+    if ((vals[i] || '').trim().toLowerCase() !== q.answerWords[i].toLowerCase()) { isCorrect = false; break; }
+  }
+
+  quiz.selected = vals.join(' ').trim();
+  quiz.feedback = isCorrect ? 'correct' : 'wrong';
+  quiz.answers.push({ wordId: q.wordId, en: q.en, ja: q.ja, correct: isCorrect });
+  render();
+
+  setTimeout(function () {
+    if (!quiz) return;
+    if (quiz.index + 1 < quiz.questions.length) {
+      quiz.index++;
+      quiz.selected = null;
+      quiz.feedback = null;
+      quiz.typed = [];
+      render();
+      focusSlot(0);
+    } else {
+      finishQuiz();
+    }
+  }, 1600);
 }
 
 function finishQuiz() {
@@ -869,6 +1020,8 @@ function handleAction(action, ds, targetEl) {
   else if (action === 'start-continue') { view.setupMode = 'continue'; view.batchSize = view.batchSize || DEFAULT_BATCH; goto('testSetup'); }
   else if (action === 'start-review') { view.setupMode = 'review'; view.batchSize = view.batchSize || DEFAULT_BATCH; goto('testSetup'); }
   else if (action === 'setup-direction') { state.lastDirection = ds.dir; saveState(); render(); }
+  else if (action === 'setup-answermode') { state.answerMode = ds.mode; saveState(); render(); }
+  else if (action === 'input-submit') { submitInputAnswer(); }
   else if (action === 'setup-begin') {
     var bsEl = document.getElementById('batchSizeInput');
     var bs = bsEl ? parseInt(bsEl.value, 10) : DEFAULT_BATCH;
@@ -915,8 +1068,35 @@ document.getElementById('app').addEventListener('change', function (e) {
   }
 });
 
+document.getElementById('app').addEventListener('keydown', function (e) {
+  var el = e.target;
+  if (!el || !el.dataset || el.dataset.slot === undefined) return;
+  if (!quiz || quiz.selected !== null) return;
+  var idx = parseInt(el.dataset.slot, 10);
+  var total = quiz.questions[quiz.index].answerWords.length;
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    if (idx < total - 1) {
+      var next = document.getElementById('slot' + (idx + 1));
+      if (next) next.focus();
+    } else {
+      submitInputAnswer();
+    }
+  } else if (e.key === 'Backspace' && el.value === '' && idx > 0) {
+    e.preventDefault();
+    var prev = document.getElementById('slot' + (idx - 1));
+    if (prev) prev.focus();
+  }
+});
+
 document.getElementById('app').addEventListener('input', function (e) {
   if (!e.target) return;
+  if (e.target.dataset && e.target.dataset.slot !== undefined) {
+    var el = e.target;
+    el.style.width = slotWidth(Math.max(el.value.length, 2)) + 'px';
+    if (view.inputError) { view.inputError = ''; }
+    return;
+  }
   if (e.target.id === 'resultsSearchInput') {
     view.resultsSearch = e.target.value;
     view.resultsVisible = 100;
