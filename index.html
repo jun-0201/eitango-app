@@ -159,6 +159,7 @@
     font-family: var(--font-body); color: var(--ink); cursor: text;
   }
   .slot-input:focus { border-bottom-color: var(--blue); }
+  .slot-text { display: inline-flex; align-items: flex-end; height: 26px; padding-top: 19px; font-size: 16px; font-weight: 700; color: var(--muted); flex: 0 0 auto; }
   .input-hint { font-size: 12px; color: var(--muted); margin: 0; }
   .verdict { font-size: 13.5px; font-weight: 700; margin: 0; padding: 9px 11px; border-radius: var(--radius, 8px); border-radius: 8px; }
   .verdict-ok { background: var(--blue-tint); color: var(--blue); }
@@ -644,7 +645,7 @@ function renderTest() {
   }
   var label;
   if (q.direction === 'en2ja') label = 'この単語の意味は?';
-  else label = q.answerWords.length > 1 ? '英熟語を答えよう' : '英単語を答えよう';
+  else label = inputParts(q).length > 1 ? '英熟語を答えよう' : '英単語を答えよう';
   out += '<p class="card-label">' + label + '</p>';
   out += '<p class="card-word">' + escapeHtml(q.prompt) + '</p>';
   if (quiz.inputMode && quiz.selected === null) {
@@ -695,14 +696,21 @@ function renderInputSlots(q) {
   }
 
   out += '<div class="slot-row">';
-  q.answerWords.forEach(function (aw, i) {
+  var inputs = inputParts(q);
+  var slotIdx = 0;
+  q.answerParts.forEach(function (part) {
+    if (part.type === 'text') {
+      out += '<span class="slot-text">' + escapeHtml(part.text) + '</span>';
+      return;
+    }
+    var i = slotIdx++;
     var typed = quiz.typed[i] || '';
     out += '<span class="slot">';
     out += '<span class="slot-mark">';
     if (graded) {
-      var isOk = typed.trim().toLowerCase() === aw.toLowerCase();
+      var isOk = typed.trim().toLowerCase() === part.word.toLowerCase();
       out += markSvg(isOk);
-      if (!isOk) out += '<span class="slot-answer">' + escapeHtml(aw) + '</span>';
+      if (!isOk) out += '<span class="slot-answer">' + escapeHtml(part.word) + '</span>';
     }
     out += '</span>';
     var w = slotWidth(Math.max(typed.length, 2));
@@ -710,7 +718,7 @@ function renderInputSlots(q) {
       ' style="width:' + w + 'px"' +
       ' value="' + escapeHtml(typed) + '"' +
       ' autocapitalize="off" autocorrect="off" spellcheck="false"' +
-      ' enterkeyhint="' + (i < q.answerWords.length - 1 ? 'next' : 'done') + '"' +
+      ' enterkeyhint="' + (i < inputs.length - 1 ? 'next' : 'done') + '"' +
       (graded ? ' readonly' : '') + '>';
     out += '</span>';
   });
@@ -720,6 +728,9 @@ function renderInputSlots(q) {
     var ok = quiz.feedback === 'correct';
     out += '<p class="verdict ' + (ok ? 'verdict-ok' : 'verdict-ng') + '">' +
       (ok ? '正解' : '不正解　正解は ' + escapeHtml(q.correct)) + '</p>';
+    var isLast = quiz.index + 1 >= quiz.questions.length;
+    out += '<button class="btn btn-primary" data-action="input-next">' +
+      (isLast ? '結果を見る' : '次へ') + '</button>';
   } else {
     out += '<button class="btn btn-primary" data-action="input-submit">答え合わせ</button>';
     if (view.inputError) out += '<p class="notice notice-err">' + escapeHtml(view.inputError) + '</p>';
@@ -829,14 +840,62 @@ function renderResults() {
 }
 
 /* ---------------- quiz logic ---------------- */
+function isSymbolToken(t) {
+  return /^[…‥]+$/.test(t) || /^\.{2,}$/.test(t) || /^[~〜]+$/.test(t) ||
+    /^[-—–]+$/.test(t) || /^[(（][^)）]*[)）]$/.test(t);
+}
+
+function buildAnswerParts(en) {
+  var parts = [];
+  var tokens = String(en).trim().split(/\s+/);
+  tokens.forEach(function (tok) {
+    if (!tok) return;
+    if (isSymbolToken(tok)) { parts.push({ type: 'text', text: tok }); return; }
+    var rest = tok;
+    var tail = [];
+    var moved = true;
+    while (moved && rest) {
+      moved = false;
+      var mParen = rest.match(/[(（][^)）]*[)）]$/);
+      if (mParen && mParen.index > 0) {
+        tail.unshift({ type: 'text', text: mParen[0] });
+        rest = rest.slice(0, mParen.index);
+        moved = true;
+        continue;
+      }
+      var mSym = rest.match(/(?:[…‥]+|\.{2,}|[~〜]+|[—–]+|-{2,})$/);
+      if (mSym && mSym.index > 0) {
+        tail.unshift({ type: 'text', text: mSym[0] });
+        rest = rest.slice(0, mSym.index);
+        moved = true;
+      }
+    }
+    var mLead = rest.match(/^[(（][^)）]*[)）]/);
+    if (mLead && mLead[0].length < rest.length) {
+      parts.push({ type: 'text', text: mLead[0] });
+      rest = rest.slice(mLead[0].length);
+    }
+    if (rest) parts.push({ type: 'input', word: rest });
+    parts = parts.concat(tail);
+  });
+  if (!parts.some(function (p) { return p.type === 'input'; })) {
+    return [{ type: 'input', word: String(en).trim() }];
+  }
+  return parts;
+}
+
+function inputParts(q) {
+  return q.answerParts.filter(function (p) { return p.type === 'input'; });
+}
+
 function buildQuestion(word, allWords, direction) {
   var promptText = direction === 'en2ja' ? word.en : word.ja;
   var correct = direction === 'en2ja' ? word.ja : word.en;
   var pool = allWords.filter(function (w) { return w.id !== word.id; });
   var distractors = shuffle(pool).slice(0, 3).map(function (w) { return direction === 'en2ja' ? w.ja : w.en; });
   var options = shuffle([correct].concat(distractors));
-  var answerWords = word.en.trim().split(/\s+/);
-  return { wordId: word.id, en: word.en, ja: word.ja, prompt: promptText, correct: correct, options: options, direction: direction, answerWords: answerWords };
+  var answerParts = buildAnswerParts(word.en);
+  return { wordId: word.id, en: word.en, ja: word.ja, prompt: promptText, correct: correct, options: options, direction: direction, answerParts: answerParts };
 }
 
 function beginQuizSession() {
@@ -900,7 +959,7 @@ function handleAnswerSelect(idx) {
     } else {
       finishQuiz();
     }
-  }, 950);
+  }, 2000);
 }
 
 function focusSlot(i) {
@@ -913,7 +972,7 @@ function focusSlot(i) {
 function readSlots() {
   var q = quiz.questions[quiz.index];
   var vals = [];
-  for (var i = 0; i < q.answerWords.length; i++) {
+  for (var i = 0; i < inputParts(q).length; i++) {
     var el = document.getElementById('slot' + i);
     vals.push(el ? el.value : '');
   }
@@ -936,28 +995,29 @@ function submitInputAnswer() {
   quiz.typed = vals;
 
   var isCorrect = true;
-  for (var i = 0; i < q.answerWords.length; i++) {
-    if ((vals[i] || '').trim().toLowerCase() !== q.answerWords[i].toLowerCase()) { isCorrect = false; break; }
+  var inputs = inputParts(q);
+  for (var i = 0; i < inputs.length; i++) {
+    if ((vals[i] || '').trim().toLowerCase() !== inputs[i].word.toLowerCase()) { isCorrect = false; break; }
   }
 
   quiz.selected = vals.join(' ').trim();
   quiz.feedback = isCorrect ? 'correct' : 'wrong';
   quiz.answers.push({ wordId: q.wordId, en: q.en, ja: q.ja, correct: isCorrect });
   render();
+}
 
-  setTimeout(function () {
-    if (!quiz) return;
-    if (quiz.index + 1 < quiz.questions.length) {
-      quiz.index++;
-      quiz.selected = null;
-      quiz.feedback = null;
-      quiz.typed = [];
-      render();
-      focusSlot(0);
-    } else {
-      finishQuiz();
-    }
-  }, 1600);
+function advanceInputQuestion() {
+  if (!quiz || quiz.selected === null) return;
+  if (quiz.index + 1 < quiz.questions.length) {
+    quiz.index++;
+    quiz.selected = null;
+    quiz.feedback = null;
+    quiz.typed = [];
+    render();
+    focusSlot(0);
+  } else {
+    finishQuiz();
+  }
 }
 
 function finishQuiz() {
@@ -1022,6 +1082,7 @@ function handleAction(action, ds, targetEl) {
   else if (action === 'setup-direction') { state.lastDirection = ds.dir; saveState(); render(); }
   else if (action === 'setup-answermode') { state.answerMode = ds.mode; saveState(); render(); }
   else if (action === 'input-submit') { submitInputAnswer(); }
+  else if (action === 'input-next') { advanceInputQuestion(); }
   else if (action === 'setup-begin') {
     var bsEl = document.getElementById('batchSizeInput');
     var bs = bsEl ? parseInt(bsEl.value, 10) : DEFAULT_BATCH;
@@ -1073,7 +1134,7 @@ document.getElementById('app').addEventListener('keydown', function (e) {
   if (!el || !el.dataset || el.dataset.slot === undefined) return;
   if (!quiz || quiz.selected !== null) return;
   var idx = parseInt(el.dataset.slot, 10);
-  var total = quiz.questions[quiz.index].answerWords.length;
+  var total = inputParts(quiz.questions[quiz.index]).length;
   if (e.key === 'Enter') {
     e.preventDefault();
     if (idx < total - 1) {
